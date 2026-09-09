@@ -54,6 +54,7 @@ def test_rand_from_set_decode():
     assert np.all(np.isclose(test_x, recov_x, atol=1e-1))
 
 def test_hex_tf_decode():
+    pytest.importorskip('tensorflow')
     test_x = np.atleast_2d(np.array([1.3,-3.4]))
     ssp_space = make_hex_space()
     ssp_space.train_decoder_net()
@@ -64,6 +65,7 @@ def test_hex_tf_decode():
     assert np.all(np.isclose(test_x, recov_x))
 
 def test_rand_tf_decode():
+    pytest.importorskip('tensorflow')
     test_x = np.atleast_2d(np.array([1.3,-3.4]))
     rand_ssp_space = make_rand_space()
     rand_ssp_space.train_decoder_net()

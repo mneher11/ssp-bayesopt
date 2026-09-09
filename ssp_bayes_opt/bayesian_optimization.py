@@ -221,7 +221,7 @@ class BayesianOptimization:
 
         for row_idx, (x, y) in enumerate(zip(init_xs, init_ys)):
             self.xs[row_idx] = x
-            self.ys[row_idx] = y
+            self.ys[row_idx] = np.ravel(y)[0]
 
         lbounds = self.bounds[:, 0]
         ubounds = self.bounds[:, 1]
@@ -294,7 +294,7 @@ class BayesianOptimization:
 
             if y_t.flatten() >= best_phi_score.min():
                 worst_idx = best_phi_score.argmin()
-                best_phi_score[worst_idx] = y_t
+                best_phi_score[worst_idx] = np.ravel(y_t)[0]
 
             mu_t, var_t, phi_t = agt.eval(x_t)
 
@@ -309,7 +309,7 @@ class BayesianOptimization:
 
             t_now = t + init_xs.shape[0]
             self.xs[t_now] = np.copy(x_t)
-            self.ys[t_now] = np.copy(y_t)
+            self.ys[t_now] = np.ravel(y_t)[0]
             if self.log_and_plot_f is not None:
                 self.log_and_plot_f(
                     np.vstack(self.xs[:t_now + 1]),

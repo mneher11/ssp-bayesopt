@@ -48,6 +48,7 @@ nengo = [
     "nengo-ocl>=3.0",
     "nengolib",
     "pyopencl",
+    "pytry",
 ]
 # Nengo on SpiNNaker neuromorphic hardware (requires old Nengo 2.x)
 spinnaker = [
