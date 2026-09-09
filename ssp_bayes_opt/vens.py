@@ -12,7 +12,21 @@ try:
     from nengo_loihi.builder.ensemble import get_gain_bias, get_samples
     from nengo_loihi.neurons import loihi_rates
 except ImportError:
-    pass
+    # Pure-nengo fallbacks so VirtualEnsemble can be built (and probed with
+    # the reference nengo.Simulator) without nengo_loihi installed. The
+    # loihi versions apply Loihi-specific discretization; these fallbacks
+    # use the reference neuron rates instead.
+    def get_samples(dist, n, d=None, rng=np.random):
+        return dist.sample(n, d, rng=rng)
+
+    def get_gain_bias(ens, rng=np.random, intercept_limit=0.95):
+        max_rates = get_samples(ens.max_rates, ens.n_neurons, rng=rng)
+        intercepts = get_samples(ens.intercepts, ens.n_neurons, rng=rng)
+        gain, bias = ens.neuron_type.gain_bias(max_rates, intercepts)
+        return gain, bias, max_rates, intercepts
+
+    def loihi_rates(neuron_type, x, gain, bias, dt=0.001):
+        return neuron_type.rates(x, gain, bias)
 
 
 class VirtualEnsemble(nengo.Network):
@@ -60,10 +74,13 @@ class VirtualEnsemble(nengo.Network):
                 gain, bias, max_rates, intercepts = get_gain_bias(
                     ens, rng=rng, intercept_limit=intercept_limit)
 
+                # Only gain/bias are consumed downstream (by add_input and
+                # add_output via loihi_rates). Setting ens.max_rates/
+                # ens.intercepts to sampled arrays breaks nengo's reference
+                # builder (ambiguous != against the default Distribution),
+                # and nothing needs them, so leave them at Default.
                 ens.gain = gain
                 ens.bias = bias
-                ens.max_rates = max_rates
-                ens.intercepts = intercepts
 
                 ens.encoders = get_samples(
                     ens.encoders, ens.n_neurons, ens.dimensions, rng=rng)

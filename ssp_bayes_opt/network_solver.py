@@ -81,9 +81,20 @@ if __name__ == '__main__':
     # init_guess = np.ones((ssp_dim,))
     # init_guess = np.random.random(size=(ssp_dim,))
 
-    nengo.rc['progress']['progress_bar'] = 'nengo.utils.progress.TerminalProgressBar'
+    def _pick_simulator():
+        """Pick a simulator backend for the toy problem.
 
-    model, solution_probe = make_network(
+        Preference order: nengo_loihi > reference nengo.
+        """
+        try:
+            import nengo_loihi
+            return nengo_loihi.Simulator
+        except ImportError:
+            pass
+        return nengo.Simulator
+
+    Sim = _pick_simulator()
+    model, solution_probe, _ = make_network(
             bo_soln_init=init_guess,
             m=mu,
             sigma=sigma,
@@ -92,15 +103,13 @@ if __name__ == '__main__':
             neurons_per_dim=4,
             partition=None,
         )
-    import nengo_loihi
-
-    sim = nengo_loihi.Simulator(model)
+    sim = Sim(model)
     with sim:
         sim.run(2.5)
     raw_data = sim.data[solution_probe]
     print("Done no partition")
 
-    model, solution_probe = make_network(
+    model, solution_probe, _ = make_network(
         bo_soln_init=init_guess,
         m=mu,
         sigma=sigma,
@@ -109,26 +118,58 @@ if __name__ == '__main__':
         neurons_per_dim=8,
         partition=1,
     )
-    sim = nengo_loihi.Simulator(model)
+    sim = Sim(model)
     with sim:
         sim.run(2.5)
     raw_data_v2 = sim.data[solution_probe]
     print("Done with partition")
 
     def get_fun(data):
+        """Acquisition value a(φ) = m·φ + sqrt(β⁻¹ + φᵀΣφ) along a trajectory."""
+        return data @ mu + np.sqrt(beta_inv + np.sum((data @ sigma) * data, axis=-1))
 
-        return data @ mu + np.sqrt(beta_inv + np.sum((raw_data @ sigma) * raw_data, axis=-1))
+    t = sim.trange()
+
+    def norm(x):
+        return x / np.linalg.norm(x, axis=-1, keepdims=True)
+
+    n_raw = norm(raw_data)
+    n_raw_v2 = norm(raw_data_v2)
 
     import matplotlib.pyplot as plt
-    fig, axs= plt.subplots(1,2,figsize=(7,3))
-    # axs[0].plot(raw_data, alpha=0.8, color='blue')
-    # axs[0].plot(raw_data_v2, '--', color='red')
-    axs[0].plot(raw_data/np.linalg.norm(raw_data,axis=-1,keepdims=True), alpha=0.8, color='blue')
-    axs[0].plot(raw_data_v2/np.linalg.norm(raw_data_v2,axis=-1,keepdims=True), '--', color='red')
+    from matplotlib.lines import Line2D
 
-    # axs[1].plot(get_fun(raw_data), alpha=0.8, color='blue')
-    # axs[1].plot(get_fun(raw_data_v2), '--', color='red')
-    axs[1].plot(get_fun(raw_data/np.linalg.norm(raw_data,axis=-1,keepdims=True)), alpha=0.8, color='blue')
-    axs[1].plot(get_fun(raw_data_v2/np.linalg.norm(raw_data_v2,axis=-1,keepdims=True)), '--', color='red')
+    fig, axs = plt.subplots(1, 2, figsize=(11, 4), constrained_layout=True)
+
+    # Panel 1: normalized solution-SSP trajectory, one line per dimension
+    # (ssp_dim lines per run). The network performs gradient ascent on the
+    # acquisition in SSP space; convergence shows as all dimensions of a run
+    # settling to the same fixed point.
+    axs[0].plot(t, n_raw, color='tab:blue', alpha=0.8, lw=0.8)
+    axs[0].plot(t, n_raw_v2, '--', color='tab:red', alpha=0.8, lw=0.8)
+    axs[0].set_title('Solution-SSP trajectory (normalized)')
+    axs[0].set_xlabel('time [s]')
+    axs[0].set_ylabel(r'$\phi_t / \|\phi_t\|$')
+
+    # Panel 2: acquisition value a(φ) = m·φ + √(β⁻¹ + φᵀΣφ) along each
+    # normalized trajectory. The recurrent connection implements one
+    # gradient-ascent step per timestep; a successful solve makes both
+    # curves rise and plateau at the same value.
+    axs[1].plot(t, get_fun(n_raw), color='tab:blue', alpha=0.8, lw=1.2)
+    axs[1].plot(t, get_fun(n_raw_v2), '--', color='tab:red', alpha=0.8, lw=1.2)
+    axs[1].set_title('Acquisition value along trajectory')
+    axs[1].set_xlabel('time [s]')
+    axs[1].set_ylabel(r'$m\cdot\phi + \sqrt{\beta^{-1} + \phi^T\Sigma\phi}$')
+
+    # One figure-level legend with proxy handles: the panel-1 plots draw
+    # ssp_dim lines per call, so per-axes legends would list every dimension.
+    handles = [
+        Line2D([], [], color='tab:blue', lw=2,
+               label='single Ensemble (partition=None, 4 neurons/dim)'),
+        Line2D([], [], color='tab:red', ls='--', lw=2,
+               label='VirtualEnsemble (partition=1, 8 neurons/dim)'),
+    ]
+    fig.legend(handles=handles, loc='outside upper center', ncol=2, frameon=False)
+
+    fig.savefig('network_solver_demo.png', dpi=150)
     plt.show()
-    raw_data
