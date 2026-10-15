@@ -100,12 +100,20 @@ def main():
                         help="partition arg for make_network (VirtualEnsemble); default single ensemble")
     parser.add_argument("--ssp-dim", type=int, default=15)
     parser.add_argument("--seed", type=int, default=0, help="make_network seed")
+    parser.add_argument("--tau-ref", type=float, default=0.0,
+                        help="LIF refractory period; default 0 matches the "
+                             "hardware (no refractory period). Pass 0.002 "
+                             "for stock nengo.LIF behaviour.")
     parser.add_argument("--plot", action="store_true", help="save comparison figure")
+    parser.add_argument("--raise-on-error", action="store_true",
+                        help="re-raise backend failures instead of catching them, "
+                             "so debuggers/pdb/post-mortems stop at the real raise site")
     args = parser.parse_args()
 
     net_kwargs = dict(neurons_per_dim=args.neurons_per_dim,
                       partition=args.partition,
-                      seed=args.seed)
+                      seed=args.seed,
+                      tau_ref=args.tau_ref)
 
     # Backend registry: each entry is (label, Simulator class).
     backends = [("nengo", nengo.Simulator)]
@@ -133,6 +141,8 @@ def main():
                                       acq=acq_final)
                 print(f"    {label:12s} final acq = {acq_final:.4f}")
             except Exception as exc:
+                if args.raise_on_error:
+                    raise
                 import traceback
                 tb = traceback.extract_tb(exc.__traceback__)
                 frame = tb[-1]
