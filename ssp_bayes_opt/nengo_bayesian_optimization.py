@@ -165,7 +165,8 @@ class NengoBayesianOptimization(BayesianOptimization):
                     tau=tau,
                     seed=self.seed,
                     neuron_type=neuron_type,
-                    rate=kwargs.get('rate',1.)
+                    rate=kwargs.get('rate',1.),
+                    bias_free=kwargs.get('bias_free', False)
                 )
                 if 'spinnaker' in sim_type.__module__:
                     import nengo_spinnaker

@@ -71,7 +71,6 @@ sim_types = {
 }
 
 
-
 def get_args():
     parser = ArgumentParser()
 
@@ -88,13 +87,18 @@ def get_args():
     parser.add_argument('--len-scale', dest='len_scale', type=float, default=-1)
 
     parser.add_argument('--num-trials', dest='num_trials', type=int, default=1)
+    parser.add_argument('--seed', type=int, default=None,
+                        help='reproducible trial seed (default: random)')
     parser.add_argument('--data-dir', dest='data_dir', type=str, default='data')
 
     parser.add_argument('--nengo', action='store_true')
     parser.add_argument('--backend', dest='backend', type=str, default="cpu")  # loihi-sim, loihi
     parser.add_argument('--num-neurons', dest='num_neurons', type=int,
                         default=10)  # 7 is max for spinnaker with d=97, 8 for loihi
-
+    parser.add_argument('--yana-host', default='kria.local',
+                        help='KR260 host for the YANA backend')
+    parser.add_argument('--yana-readout-every', type=int, default=2500,
+                        help='YANA readout window in timesteps (default: 2500)')
     return parser.parse_args()
 
 class SamplingTrial(pytry.Trial):
@@ -228,10 +232,24 @@ class SamplingTrial(pytry.Trial):
 
 if __name__=='__main__':
     args = get_args()
+    if args.backend == 'yana':
+        if not args.nengo:
+            raise SystemExit('--backend yana requires --nengo')
+        import nengo_yana
+        sim_types['yana'] = (nengo_yana.Simulator, {
+            'progress_bar': False,
+            'device_ip': args.yana_host,
+            'readout_every': args.yana_readout_every,
+            'validate_neuron_params': False,
+        })
     # args.nengo = True
 
     # random.seed(1)
-    seeds = [random.randint(1,100000) for _ in range(args.num_trials)]
+    seeds = (
+        [args.seed + i for i in range(args.num_trials)]
+        if args.seed is not None
+        else [random.randint(1, 100000) for _ in range(args.num_trials)]
+    )
 
     if args.nengo:
         data_path = os.path.join(os.getcwd(),

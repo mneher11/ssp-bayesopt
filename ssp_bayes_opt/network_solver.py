@@ -17,11 +17,22 @@ def make_network(bo_soln_init, m, sigma, beta_inv, gamma_t,
                  dt=0.001,
                  tau_probe=0.1,
                  rate=1.,
+                 bias_free=False,
+                 tau_ref=0.0,
                  neuron_type=nengo.LIF()):
 
     init_val = bo_soln_init.flatten()/np.linalg.norm(bo_soln_init)
     ssp_dim = bo_soln_init.size
     model = nengo.Network(seed=seed)
+
+    # tau_ref: the YANA hardware has no refractory period, so the default 0
+    # builds the hardware-faithful LIF (decoders solved against tau_ref=0
+    # rate curves; solving them against tau_ref!=0 rates costs ~15x decode
+    # error on hardware). None keeps the passed neuron_type untouched; a
+    # numeric value rebuilds the neuron_type with that refractory period,
+    # so "tau_ref=0.002" restores stock nengo.LIF behaviour.
+    if tau_ref is not None:
+        neuron_type = nengo.LIF(tau_rc=neuron_type.tau_rc, tau_ref=tau_ref)
     model.config[nengo.Ensemble].neuron_type = neuron_type
 
     n_neurons = neurons_per_dim * ssp_dim
@@ -43,8 +54,28 @@ def make_network(bo_soln_init, m, sigma, beta_inv, gamma_t,
 
 
         if partition is None:
-            solution_neurons = nengo.Ensemble(n_neurons, ssp_dim, intercepts=nengo.dists.CosineSimilarity(ssp_dim+2),
-                                              label='solution_neurons')
+            intercept_dist = nengo.dists.CosineSimilarity(ssp_dim + 2)
+            if bias_free:
+                # Legacy no-bias tuning (kept for A/B comparison against the
+                # old backend): nengo-yana now supports biases natively (they
+                # ride the export's per-chain Affine nodes), so the default
+                # bias_free=False is the production path. Here gain =
+                # 1/|alpha| with bias = 0 preserves each neuron's cosine
+                # threshold, dropping only the negative-intercept
+                # (spontaneously active) neurons. Floor |alpha| at 0.1 so
+                # gains stay <= 10.
+                mags = np.maximum(
+                    np.abs(intercept_dist.sample(
+                        n_neurons, rng=np.random.RandomState(seed))),
+                    0.1)
+                solution_neurons = nengo.Ensemble(
+                    n_neurons, ssp_dim, label='solution_neurons')
+                solution_neurons.gain = 1.0 / mags
+                solution_neurons.bias = np.zeros(n_neurons)
+            else:
+                solution_neurons = nengo.Ensemble(
+                    n_neurons, ssp_dim, intercepts=intercept_dist,
+                    label='solution_neurons')
             nengo.Connection(stim, solution_neurons, synapse=None)
             nengo.Connection(solution_neurons, solution_neurons, function=transform_func,
                              synapse=tau)  # , solver=nengo.solvers.LstsqDrop(weights=False,drop=0.25))
@@ -57,7 +88,8 @@ def make_network(bo_soln_init, m, sigma, beta_inv, gamma_t,
 
             solution_neurons = VirtualEnsemble(n_ensembles=partition,
                                 n_neurons_per_ensemble=n_neurons // partition,
-                                dimensions=ssp_dim, label='solution_neurons')
+                                dimensions=ssp_dim, label='solution_neurons',
+                                bias_free=bias_free)
             solution_neurons.add_input(stim, synapse=None)
 
             solution_neurons.add_input(solution_neurons.add_output(function=transform_func, dt=dt)[0],
