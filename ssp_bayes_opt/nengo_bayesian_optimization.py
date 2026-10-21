@@ -36,6 +36,8 @@ class NengoBayesianOptimization(BayesianOptimization):
                  neuron_type=nengo.LIF(), sim_type=nengo.Simulator,
                  sim_args={},
                  checkpoint_path=None,
+                 decoder_solver=None,
+                 encoder_sparsity=0.0,
                  **kwargs):
 
         '''
@@ -58,6 +60,9 @@ class NengoBayesianOptimization(BayesianOptimization):
             lengthscale parameters after every new observation, the other 
             algorithms do not.  All agents use the Mutual Information 
             acquisition function of Contal et al. (2014).
+        decoder_solver : nengo.solvers.Solver or None
+            Optional solver for the recurrent ensemble connection. If None,
+            Nengo's configured default solver is used.
 
         Returns:
         --------
@@ -166,7 +171,9 @@ class NengoBayesianOptimization(BayesianOptimization):
                     seed=self.seed,
                     neuron_type=neuron_type,
                     rate=kwargs.get('rate',1.),
-                    bias_free=kwargs.get('bias_free', False)
+                    bias_free=kwargs.get('bias_free', False),
+                    decoder_solver=decoder_solver,
+                    encoder_sparsity=encoder_sparsity
                 )
                 if 'spinnaker' in sim_type.__module__:
                     import nengo_spinnaker

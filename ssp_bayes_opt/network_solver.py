@@ -2,6 +2,39 @@ import numpy as np
 import nengo
 from .vens import VirtualEnsemble
 
+
+class MagnitudePrunedEncoders(nengo.dists.Distribution):
+    """Sample default Nengo encoders, then globally prune smallest magnitudes."""
+
+    sparsity = nengo.params.NumberParam("sparsity", low=0.0, high=1.0)
+
+    def __init__(self, sparsity):
+        if not 0.0 <= sparsity <= 1.0:
+            raise ValueError("encoder sparsity must be in [0, 1]")
+        super().__init__()
+        self.sparsity = sparsity
+        self.base_distribution = nengo.dists.ScatteredHypersphere(surface=True)
+
+    def sample(self, n, d=None, rng=np.random):
+        """Prune globally, then normalize surviving rows while retaining zeros."""
+        samples = np.asarray(self.base_distribution.sample(n, d=d, rng=rng))
+        if samples.ndim != 2:
+            raise ValueError("encoder samples must be a 2D matrix")
+        n_prune = int(round(self.sparsity * samples.size))
+        if n_prune:
+            prune_idx = np.argsort(np.abs(samples), axis=None, kind="stable")[:n_prune]
+            samples.flat[prune_idx] = 0.0
+        if self.sparsity == 0.0:
+            return samples
+
+        # Normalization is performed here (and disabled in the Ensemble) so
+        # fully pruned rows can safely remain zero instead of becoming NaNs.
+        norms = np.linalg.norm(samples, axis=1, keepdims=True)
+        nonzero_rows = norms[:, 0] > 0.0
+        samples[nonzero_rows] /= norms[nonzero_rows]
+        return samples
+
+
 # Notes regarding the parition:
 # One chip has 128 cores, each core has
 # MAX_NEURONS = 1024
@@ -19,7 +52,9 @@ def make_network(bo_soln_init, m, sigma, beta_inv, gamma_t,
                  rate=1.,
                  bias_free=False,
                  tau_ref=0.0,
-                 neuron_type=nengo.LIF()):
+                 neuron_type=nengo.LIF(),
+                 decoder_solver=None,
+                 encoder_sparsity=0.0):
 
     init_val = bo_soln_init.flatten()/np.linalg.norm(bo_soln_init)
     ssp_dim = bo_soln_init.size
@@ -36,6 +71,16 @@ def make_network(bo_soln_init, m, sigma, beta_inv, gamma_t,
     model.config[nengo.Ensemble].neuron_type = neuron_type
 
     n_neurons = neurons_per_dim * ssp_dim
+    if not 0.0 <= encoder_sparsity <= 1.0:
+        raise ValueError("encoder_sparsity must be in [0, 1]")
+    encoder_kwargs = (
+        {"encoders": MagnitudePrunedEncoders(encoder_sparsity)}
+        if encoder_sparsity > 0.0 else {}
+    )
+    if encoder_sparsity > 0.0:
+        # Sparse samples are normalized by MagnitudePrunedEncoders; leave rows
+        # that prune to zero intact rather than dividing them by zero.
+        model.config[nengo.Ensemble].normalize_encoders = False
 
     with model:
         def stim_func(t):
@@ -69,16 +114,20 @@ def make_network(bo_soln_init, m, sigma, beta_inv, gamma_t,
                         n_neurons, rng=np.random.RandomState(seed))),
                     0.1)
                 solution_neurons = nengo.Ensemble(
-                    n_neurons, ssp_dim, label='solution_neurons')
+                    n_neurons, ssp_dim, label='solution_neurons',
+                    **encoder_kwargs)
                 solution_neurons.gain = 1.0 / mags
                 solution_neurons.bias = np.zeros(n_neurons)
             else:
                 solution_neurons = nengo.Ensemble(
                     n_neurons, ssp_dim, intercepts=intercept_dist,
-                    label='solution_neurons')
+                    label='solution_neurons', **encoder_kwargs)
             nengo.Connection(stim, solution_neurons, synapse=None)
-            nengo.Connection(solution_neurons, solution_neurons, function=transform_func,
-                             synapse=tau)  # , solver=nengo.solvers.LstsqDrop(weights=False,drop=0.25))
+            connection_kwargs = ({} if decoder_solver is None
+                                 else {"solver": decoder_solver})
+            nengo.Connection(solution_neurons, solution_neurons,
+                             function=transform_func, synapse=tau,
+                             **connection_kwargs)
             solution_probe = nengo.Probe(solution_neurons, synapse=tau_probe)
 
         else:
@@ -89,11 +138,15 @@ def make_network(bo_soln_init, m, sigma, beta_inv, gamma_t,
             solution_neurons = VirtualEnsemble(n_ensembles=partition,
                                 n_neurons_per_ensemble=n_neurons // partition,
                                 dimensions=ssp_dim, label='solution_neurons',
-                                bias_free=bias_free)
+                                bias_free=bias_free, **encoder_kwargs)
             solution_neurons.add_input(stim, synapse=None)
 
-            solution_neurons.add_input(solution_neurons.add_output(function=transform_func, dt=dt)[0],
-                                       synapse=tau)
+            output_kwargs = ({} if decoder_solver is None
+                             else {"solver": decoder_solver})
+            solution_neurons.add_input(
+                solution_neurons.add_output(
+                    function=transform_func, dt=dt, **output_kwargs)[0],
+                synapse=tau)
 
             # Copy the output so that the above is collapsed as a passthrough
             solution_probe = nengo.Probe(solution_neurons.add_output(dt=dt)[0], synapse=tau_probe)
