@@ -301,6 +301,108 @@ def test_stop_terminates_running_subprocess(tmp_path):
                             trial, scratch, stop)
 
 
+def test_private_trial_cache_bypasses_corrupt_shared_nengo_entry(tmp_path, monkeypatch):
+    import nengo
+    from nengo.exceptions import CacheIOError
+    from experiments import run_agent as runner
+
+    shared = tmp_path / 'shared-cache'
+    settings = nengo.rc['decoder_cache']
+    for key, value in dict(enabled='True', readonly='False', path=str(shared)).items():
+        monkeypatch.setitem(settings, key, value)
+    with nengo.Network(seed=123) as network:
+        stim = nengo.Node([0.5])
+        neurons = nengo.Ensemble(20, 1)
+        nengo.Connection(stim, neurons)
+        probe = nengo.Probe(neurons, synapse=0.01)
+    with nengo.Simulator(network, progress_bar=False) as sim:
+        sim.run_steps(20)
+        expected = sim.data[probe].copy()
+    entries = list(shared.rglob('*.nco'))
+    assert entries, 'regression must exercise an actual disk cache hit'
+    for path in entries:
+        with path.open('r+b') as stream:
+            stream.write(b'BAD')  # Preserve file length, but corrupt the NCO magic header.
+    with pytest.raises(CacheIOError, match='Not a Nengo cache object file'):
+        nengo.Simulator(network, progress_bar=False)
+    corrupted = {p: p.read_bytes() for p in entries}
+    with runner.isolated_decoder_cache() as private:
+        assert private != shared
+        with nengo.Simulator(network, progress_bar=False) as sim:
+            sim.run_steps(20)
+            np.testing.assert_allclose(sim.data[probe], expected)
+        assert list(private.rglob('*.nco'))  # Within-trial reuse is still enabled.
+    assert not private.exists()
+    assert settings['path'] == str(shared)
+    assert all(path.read_bytes() == content for path, content in corrupted.items())
+
+
+def test_private_trial_cache_cleans_up_and_restores_settings_after_failure(tmp_path, monkeypatch):
+    from experiments import run_agent as runner
+
+    settings = runner.nengo.rc['decoder_cache']
+    shared = tmp_path / 'shared-cache'
+    shared.mkdir()
+    sentinel = shared / 'do-not-delete'
+    sentinel.write_text('existing shared cache')
+    for key, value in dict(enabled='True', readonly='True', path=str(shared)).items():
+        monkeypatch.setitem(settings, key, value)
+    with pytest.raises(RuntimeError, match='trial failed'):
+        with runner.isolated_decoder_cache() as private:
+            assert settings['path'] == str(private)
+            assert not settings.getboolean('readonly')
+            (private / 'partial-cache').write_text('incomplete')
+            raise RuntimeError('trial failed')
+    assert not private.exists()
+    assert settings['path'] == str(shared)
+    assert settings.getboolean('readonly')
+    assert sentinel.read_text() == 'existing shared cache'
+
+
+def test_private_trial_cache_respects_explicitly_disabled_cache(monkeypatch):
+    from experiments import run_agent as runner
+
+    settings = runner.nengo.rc['decoder_cache']
+    monkeypatch.setitem(settings, 'enabled', 'False')
+    previous = dict(settings)
+    with runner.isolated_decoder_cache() as private:
+        assert private is None
+        assert dict(settings) == previous
+    assert dict(settings) == previous
+
+
+def test_runner_uses_fresh_worker_local_decoder_cache_for_each_yana_trial(tmp_path, monkeypatch):
+    from experiments import run_agent as runner
+    from nengo.cache import get_default_decoder_cache
+
+    worker_tmp = tmp_path / 'worker-tmp'
+    worker_tmp.mkdir()
+    monkeypatch.setattr(runner.tempfile, 'tempdir', str(worker_tmp))
+    settings = runner.nengo.rc['decoder_cache']
+    for key, value in dict(enabled='True', readonly='True', path=str(tmp_path / 'shared')).items():
+        monkeypatch.setitem(settings, key, value)
+    paths = []
+
+    def trial(self, **kwargs):
+        cache = get_default_decoder_cache()
+        path = cache.cache_dir
+        assert path.parent == worker_tmp
+        assert not (path / 'previous-trial').exists()
+        (path / 'previous-trial').write_text('this trial only')
+        assert not cache.readonly
+        paths.append(path)
+        return {}
+
+    monkeypatch.setattr(runner.SamplingTrial, 'run', trial)
+    runner.main(['--nengo', '--backend', 'yana', '--num-trials', '2', '--seed', '123',
+                 '--data-dir', str(tmp_path / 'data')])
+    assert len(set(paths)) == 2
+    assert all(not path.exists() for path in paths)
+    assert settings['path'] == str(tmp_path / 'shared')
+    assert settings.getboolean('readonly')
+    assert not (tmp_path / 'shared').exists()
+
+
 def test_runner_forwards_sparsity_and_network_seed(monkeypatch):
     from experiments import run_agent as runner
 

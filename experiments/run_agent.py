@@ -15,6 +15,8 @@ except ImportError:
     import functions
 
 from argparse import ArgumentParser
+from contextlib import contextmanager, nullcontext
+import tempfile
 import os.path
 import random
 import json
@@ -168,6 +170,30 @@ def _save_power_capture(capture, windows=()):
     fig.savefig(png_path, dpi=160)
     plt.close(fig)
     print(f'Power plot: {png_path}', flush=True)
+
+
+@contextmanager
+def isolated_decoder_cache():
+    """Fresh cache per trial, inside the worker's TMPDIR, never the shared cache.
+
+    Keep reuse between sample builds (including NIR export), but discard the
+    cache after the trial. A killed trial's TMPDIR is cleared by the orchestrator
+    before retrying. Each runner executes trials sequentially in its own process.
+    """
+    settings = nengo.rc['decoder_cache']
+    if not settings.getboolean('enabled'):
+        yield None
+        return
+    previous = {key: settings[key] for key in ('path', 'readonly')}
+    with tempfile.TemporaryDirectory(prefix='nengo-decoders-') as directory:
+        try:
+            settings['path'] = directory
+            settings['readonly'] = 'False'
+            print(f'Nengo decoder cache: private trial cache at {directory}', flush=True)
+            yield Path(directory)
+        finally:
+            for key, value in previous.items():
+                settings[key] = value
 
 
 class YanaPowerSimulator:
@@ -470,7 +496,9 @@ def main(argv=None):
                   'num_neurons': args.num_neurons,
                   'encoder_sparsity': args.encoder_sparsity
                   }
-        r = SamplingTrial().run(**params)
+        cache = isolated_decoder_cache() if args.backend in ('yana', 'yana-emulator') else nullcontext()
+        with cache:
+            r = SamplingTrial().run(**params)
 
 
 if __name__ == '__main__':
