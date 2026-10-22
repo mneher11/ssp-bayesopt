@@ -24,10 +24,10 @@ class Domain:
 class BoundedDomain(Domain):
     """Axis-aligned rectangular domain sampled with Sobol sequences."""
 
-    def __init__(self, bounds: np.ndarray):
+    def __init__(self, bounds: np.ndarray, seed=None):
         self.bounds = bounds
         self.data_dim = self.bounds.shape[0]
-        self.sampler = qmc.Sobol(d=self.data_dim)
+        self.sampler = qmc.Sobol(d=self.data_dim, seed=seed)
 
     def sample(self, num_points: int = 10, method: str = 'sobol') -> np.ndarray:
         if method != 'sobol':

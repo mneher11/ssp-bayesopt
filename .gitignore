@@ -1,5 +1,8 @@
 # Project specific
 
+# Paper outputs and reusable deployment scratch
+/artifacts/
+
 # Data directories (anywhere in the repo)
 data/
 **/data/

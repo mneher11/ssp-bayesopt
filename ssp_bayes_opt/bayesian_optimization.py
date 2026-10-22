@@ -98,7 +98,7 @@ class BayesianOptimization:
             domain = agents.domains.TargetDefinedDomain(self.target)
         else:
             self.logger.info('Creating Rectangular Domain')
-            domain = agents.domains.BoundedDomain(self.bounds)
+            domain = agents.domains.BoundedDomain(self.bounds, seed=self.sampling_seed)
 
         self.logger.info('Sampling from domain')
         if isinstance(init_points, int):
