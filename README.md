@@ -107,6 +107,86 @@ See [experiments/run_agent.py](experiments/run_agent.py) for a full example with
 
 ---
 
+## Paper experiments on YANA
+
+Use the updated sibling `nengo-yana` and `yana` checkouts (deployment workspace,
+cycle capture, typed capacity errors, and FIFO arbitration support are required).
+Start the board runtime before running experiments.
+
+```bash
+# Inspect the full sweep without using hardware or creating artifacts.
+python experiments/run_paper_experiments.py --yana-host kria.local --dry-run
+
+# Four concurrent host workers, one shared FPGA.
+python experiments/run_paper_experiments.py \
+  --workspace-dir "$PWD" --yana-host kria.local --workers 4
+```
+
+The grid is the union of dense encoders at dimensions **25, 55, 121** and
+50%/90% sparse encoders at dimension 55. Neurons per dimension are
+`5,10,...,40` (25), `2,4,...,18` (55), and `1,...,8` (121). The 121 arm uses
+explicitly 5 scales × 4 rotations: the old `--ssp-dim 120` default hex setup
+silently produced 97 dimensions. Defaults are 100 optimization samples **plus
+10 initial observations**, 5 trials, run-only power at 2 ms, and a 5 ns FPGA
+clock period (200 MHz): **129 configurations / 645 trials** before hardware
+exclusions. Change `--fpga-clock-period-ns` only to match the actual
+bitstream; simulation timestep and host wall time are not FPGA latency.
+
+For two systems, add `--num-shards 2 --shard-index 0` on one and
+`--num-shards 2 --shard-index 1` on the other. Sharding is over the full grid,
+independent of trial count or subset filters. Use `--functions`, `--ssp-dims`,
+`--encoder-sparsities`, and `--num-neurons` to select a subset. Each worker
+processes one configuration's trials sequentially; different configurations
+prepare concurrently and arbitrate for the FPGA at sample boundaries.
+
+Outputs live under `artifacts/paper/<function>/dim-..._sparsity-..._neurons-.../`:
+
+- `config.json`: complete parameter identity, excluding requested trial count.
+- `trial-NNNN/trial.json`: random seed, trial index, host, and start time.
+- `trial-NNNN/trajectory/`: optimization `.npz`, including raw FPGA cycles and
+  latencies, regret, objective values, and sample locations.
+- `trial-NNNN/measurements/sample-NNNN.json`: raw run-only power samples/markers,
+  seed, 1-based optimization sample, **0-based trajectory index**, execution
+  window cycles, clock period, and summed on-chip latency.
+- `trial-NNNN/run.log`, `command.json`, and validated/checksummed `complete.json`.
+
+Re-run the same command to resume. Increasing `--num-trials` appends repetitions;
+completed trials are validated and never overwritten. Incomplete attempts are
+archived under `trial-NNNN-attempts/` and retried with their original randomly
+chosen seed. A fully saved trial missing only its completion marker is recovered
+without rerunning. Corrupt completed trials or mismatched configurations stop
+execution rather than silently replacing results. Use a different workspace
+when changing result-affecting settings such as `--num-samples`.
+
+Every actual compiled network undergoes YANA resource validation. A typed
+physical capacity failure records `failure.json` and `capacity-blocked.json`;
+remaining trials of that configuration are **not run by policy**, not claimed
+infeasible for all random seeds. Completed trials remain intact, failed seeds
+are not replaced, and the blocked configuration is skipped on resume. Inspect
+these records when analyzing results. Other errors stop execution and are not
+misclassified as capacity exclusions.
+
+Deployment files reuse one protected directory per worker under
+`artifacts/paper/.work/shard-N/worker-N/deployment/fileset/`. Stale generated
+files are removed before each sample; concurrent workers never share a fileset.
+Other temporary files are isolated per worker and cleared before each trial.
+Do not manually edit or delete scratch files while a worker owns them. Locks
+prevent overlapping orchestrators for the same shard/configuration.
+
+A small smoke run (use a separate workspace from paper results):
+
+```bash
+python experiments/run_paper_experiments.py \
+  --workspace-dir /tmp/ssp-paper-smoke --yana-host kria.local --workers 2 \
+  --functions himmelblau --ssp-dims 25 --encoder-sparsities 0 \
+  --num-neurons 5 10 --num-trials 2 --num-samples 2
+```
+
+Repeat it to verify resume; then increase `--num-trials` to 3. `Ctrl-C` stops
+active subprocesses and leaves attempts available for the next resume.
+
+---
+
 ## Package Structure
 
 ```
