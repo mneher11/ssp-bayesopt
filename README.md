@@ -185,6 +185,47 @@ python experiments/run_paper_experiments.py \
 Repeat it to verify resume; then increase `--num-trials` to 3. `Ctrl-C` stops
 active subprocesses and leaves attempts available for the next resume.
 
+### Read-only plots while the sweep runs
+
+```bash
+.venv/bin/python experiments/plot_paper_experiments.py \
+  --artifact-dirs "$PWD/artifacts/paper" \
+  --output-dir /tmp/ssp-paper-plots
+```
+
+For separate shard trees, pass both locally accessible paths after
+`--artifact-dirs` (for example a read-only mount of the other host's tree).
+For one shared tree, pass it only once. The script does not fetch remote data.
+
+Outputs are `plot1-dimensions.png`, `plot2-sparsity.png`, and `summary.csv`.
+Each figure has separate panels for the three objective functions:
+
+- Plot 1: dense encoders at 25, 55, and 121 dimensions.
+- Plot 2: 55 dimensions at 50% and 90% encoder sparsity.
+- Each point represents one configuration, averaged over its **currently
+  completed** trials. Labels show neurons/dimension **(completed trial count)**.
+  Lines connect increasing neuron counts within a dimension/sparsity group;
+  they are not fitted Pareto frontiers. Use `--no-annotations` to hide labels.
+- X is mean inference energy: for each optimization sample, multiply its mean
+  run-only sensor power by its FPGA-reported latency, then average over samples
+  and trials. The figure uses mJ; the CSV uses J. This is measured board/sensor
+  power, not idle-subtracted or PL-only energy, and never host wall-clock time.
+- Y is final cumulative average regret: mean regret across all observations
+  (including the 10 initial observations), averaged over completed trials.
+
+Only trials with an existing `complete.json` and matching parameter/file
+checksums are read. In-progress trials, archived attempts, and invalid/missing
+outputs are skipped without recovery or repair. Identical copies across roots
+are counted once; conflicting copies or mixed fixed settings/budgets are
+rejected. Empty panels say "No completed trials yet". Re-run to refresh the
+snapshot as more trials finish.
+
+The reader never takes sweep locks, writes completion markers, touches scratch
+files, or contacts the FPGA. Outputs (including Matplotlib's temporary cache)
+are kept outside **all** input trees; destinations inside an input tree are
+rejected. Existing plot files are replaced atomically, not written through
+symlinks/hardlinks to source files.
+
 ---
 
 ## Package Structure
