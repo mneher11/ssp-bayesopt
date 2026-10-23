@@ -28,6 +28,7 @@ FUNCTIONS = ('himmelblau', 'goldstein-price', 'branin-hoo')
 TITLES = ('Himmelblau', 'Goldstein–Price', 'Branin–Hoo')
 DIMENSIONS = (25, 55, 121)
 OUTPUTS = ('plot1-dimensions.png', 'plot2-sparsity.png', 'summary.csv')
+DEFAULT_HOST_POWER_OFFSETS_MW = {'kria.local': 2360.0, 'ess-kria-03': 2800.0}
 
 
 @dataclass
@@ -64,7 +65,7 @@ def verified_bytes(directory, relative, manifest):
     return data
 
 
-def read_trial(marker):
+def read_trial(marker, host_power_offsets_mw=None):
     directory = marker.parent
     config = json.loads((directory.parent / 'config.json').read_bytes())
     if config.get('schema_version') != 1:
@@ -111,6 +112,12 @@ def read_trial(marker):
         final_regret = float(np.mean(regrets))
         if not math.isfinite(final_regret):
             raise ValueError('Nonfinite final average regret')
+    if host_power_offsets_mw is None:
+        host_power_offsets_mw = DEFAULT_HOST_POWER_OFFSETS_MW
+    host = metadata.get('yana_host')
+    # Unknown hosts retain the raw measurement; callers can explicitly supply
+    # an offset (including zero) for them via --host-power-offset-mw.
+    offset_uw = host_power_offsets_mw.get(host, 0.0) * 1000.0
     energies = []
     for index, relative in enumerate(measurements, 1):
         data = json.loads(verified_bytes(directory, relative, manifest))
@@ -144,7 +151,10 @@ def read_trial(marker):
             raise ValueError(f'FPGA timing mismatch: {relative}')
         # Average within each sample first, not across all sensor readings of
         # the trial: samples with more readings must not receive extra weight.
-        energies.append(float(np.mean(powers)) * 1e-6 * latency_ns * 1e-9)
+        # Measurements are in µW; host offsets are specified in mW. Clamp
+        # below-zero residual readings to zero before converting power to energy.
+        corrected_power_uw = np.maximum(np.asarray(powers, dtype=float) - offset_uw, 0.0)
+        energies.append(float(np.mean(corrected_power_uw)) * 1e-6 * latency_ns * 1e-9)
     energy = float(np.mean(energies))
     if not math.isfinite(energy) or energy < 0:
         raise ValueError('Nonfinite inference energy')
@@ -152,7 +162,7 @@ def read_trial(marker):
                         energy, final_regret, tuple(sorted(manifest.items())), directory)
 
 
-def load_trials(roots, warn=None):
+def load_trials(roots, warn=None, host_power_offsets_mw=None):
     """Snapshot marker paths once; new/in-progress trials wait for the next run."""
     if warn is None:
         warn = lambda message: print(message, file=sys.stderr)
@@ -166,7 +176,7 @@ def load_trials(roots, warn=None):
         try:
             if not inside(marker.resolve(), root.resolve()):
                 raise ValueError('Completion marker escapes input tree')
-            trial = read_trial(marker)
+            trial = read_trial(marker, host_power_offsets_mw)
         except (ValueError, KeyError, TypeError, OSError, EOFError) as exc:
             warn(f'[skip] {marker.parent}: {exc}')
             skipped += 1
@@ -270,7 +280,7 @@ def draw_plot(rows, kind, path, annotate=True):
                                     textcoords='offset points', color=color, fontsize=7)
                 plotted = True
             ax.set_title(label)
-            ax.set_xlabel('Mean inference energy [mJ]')
+            ax.set_xlabel('Mean PL inference energy [mJ] (host PS offset subtracted)')
             ax.set_ylabel('Final cumulative average regret')
             ax.ticklabel_format(style='sci', axis='both', scilimits=(-3, 4), useOffset=False)
             ax.grid(alpha=0.25)
@@ -331,6 +341,9 @@ def parse_args(argv=None):
                         help='one shared artifact tree or multiple locally accessible shard trees (read only)')
     parser.add_argument('--output-dir', type=Path, default=Path('/tmp/ssp-paper-plots'))
     parser.add_argument('--no-annotations', action='store_true', help='omit neuron/trial-count labels')
+    parser.add_argument('--host-power-offset-mw', action='append', default=[], metavar='HOST=MW',
+                        help='override/add a static host power offset in mW; repeatable '
+                             '(defaults: kria.local=2360, ess-kria-03=2800; use HOST=0 to disable)')
     return parser.parse_args(argv)
 
 
@@ -341,7 +354,19 @@ def main(argv=None):
         if not root.is_dir():
             raise ValueError(f'Artifact directory does not exist: {root}')
     destination = output_directory(args.output_dir, roots)
-    trials = load_trials(roots)
+    offsets = dict(DEFAULT_HOST_POWER_OFFSETS_MW)
+    for value in args.host_power_offset_mw:
+        if '=' not in value:
+            raise ValueError(f'Invalid --host-power-offset-mw {value!r}; expected HOST=MW')
+        host, raw_offset = value.split('=', 1)
+        try:
+            offset = float(raw_offset)
+        except ValueError as exc:
+            raise ValueError(f'Invalid power offset for {host!r}: {raw_offset!r}') from exc
+        if not host or not math.isfinite(offset) or offset < 0:
+            raise ValueError(f'Invalid power offset {value!r}; host and nonnegative finite MW required')
+        offsets[host] = offset
+    trials = load_trials(roots, host_power_offsets_mw=offsets)
     rows = aggregate(trials)
     save_plots(rows, destination, annotate=not args.no_annotations)
     print(f'Plotted {len(rows)} configurations from {len(trials)} completed trials.')

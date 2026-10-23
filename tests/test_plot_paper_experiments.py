@@ -63,6 +63,26 @@ def test_energy_is_mean_of_power_times_fpga_latency_per_sample(tmp_path, config)
     assert metrics.final_average_regret == pytest.approx(6.5)
 
 
+def test_host_static_power_offset_is_subtracted_before_energy_calculation(tmp_path, config):
+    trial = make_trial(tmp_path, config)
+    metadata_path = trial / 'trial.json'
+    metadata = paper.read_json(metadata_path)
+    metadata['yana_host'] = 'kria.local'
+    paper.atomic_json(metadata_path, metadata)
+    for index, power in ((1, 3_000_000), (2, 4_000_000)):
+        path = trial / 'measurements' / f'sample-{index:04d}.json'
+        data = paper.read_json(path)
+        data['samples'] = [dict(phase='run', timestamp_ns=100, power_uw=power)]
+        paper.atomic_json(path, data)
+    recommit(trial, config)
+
+    metrics = plot.read_trial(trial / 'complete.json')
+    # 2.36 W removed from each sample; timing is 500 ns and 1000 ns.
+    assert metrics.mean_energy_j == pytest.approx((0.64 * 500e-9 + 1.64 * 1000e-9) / 2)
+    custom = plot.read_trial(trial / 'complete.json', {'kria.local': 1000.0})
+    assert custom.mean_energy_j == pytest.approx((2 * 500e-9 + 3 * 1000e-9) / 2)
+
+
 def test_only_completed_trials_are_read_not_active_or_archived(tmp_path, config, monkeypatch):
     complete = make_trial(tmp_path, config)
     active = paper.config_path(tmp_path, config) / 'trial-0002'
